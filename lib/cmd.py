@@ -1,5 +1,5 @@
 from prompt_toolkit.styles import Style
-
+from lib import tools
 from pygments.lexer import Lexer, RegexLexer, do_insertions, bygroups, \
     include, default, this, using, words
 from pygments.token import Punctuation, \
@@ -9,10 +9,8 @@ class Shad0wLexer(RegexLexer):
     name = 'shad0w'
     aliases = ['shad0w']
 
-    commands = ("help execute cat mkdir \
-                 upload cd elevate beacons exit \
-                 ls rm pwd download whoami mimikatz").split()
-    
+    commands = tools.get_commands()
+
     lex_style = Style.from_dict({
     'pygments.keyword':   '#FFFFFF',
     })
@@ -23,7 +21,7 @@ class Shad0wLexer(RegexLexer):
         ],
         'basic': [
             (r'\b({})(\s*)\b'.format('|'.join(commands)), bygroups(Keyword, Text)),
-            (r'-\S*', Operator),
+            (r'\s-\S*', Operator),
             (r'(["\'])(?:(?=(\\?))\2.)*?\1', String.Single),
         ],
     }

